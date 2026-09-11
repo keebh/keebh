@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>BetDh Web - 마도리</title>
+<style>
+  body { font-family: -apple-system, "Malgun Gothic", sans-serif; background:#fafafa; margin:0; padding:0; }
+  header { background:#212121; color:#fff; padding:14px 20px; }
+  header h1 { margin:0; font-size:18px; }
+  header p { margin:4px 0 0; font-size:12px; color:#bbb; font-style: italic; }
+  .controls { display:flex; gap:10px; padding:14px 20px; flex-wrap:wrap; align-items:center; }
+  .controls input, .controls select, .controls button {
+    padding:8px 12px; font-size:14px; border-radius:6px; border:1px solid #ccc;
+  }
+  .controls button { background:#3700B3; color:#fff; border:none; cursor:pointer; }
+  .controls button:hover { background:#2a0087; }
+  #status { padding: 0 20px 10px; color:#d32f2f; font-size:13px; min-height: 18px; }
+  .table-wrap { overflow-x:auto; padding: 0 20px 20px; }
+  table { border-collapse: collapse; min-width: 600px; background:#fff; }
+  th, td { border:1px solid #e0e0e0; padding:10px 14px; text-align:center; font-size:13px; white-space:nowrap; }
+  th { background:#212121; color:#fff; }
+  tr:nth-child(even) td { background:#f2f2f2; }
+  td.highlight { color:#d32f2f; font-weight:bold; }
+</style>
+</head>
+<body>
+<header>
+  <h1>BetDh Web - 마도리</h1>
+  <p>Horseracing Betting Strategy</p>
+</header>
+
+<div class="controls">
+  <input type="date" id="dateInput" />
+  <select id="raceSelect"><option>경주 선택</option></select>
+  <button id="loadBtn">불러오기</button>
+</div>
+<div id="status"></div>
+<div class="table-wrap">
+  <table id="dataTable">
+    <thead><tr id="headerRow"></tr></thead>
+    <tbody id="bodyRows"></tbody>
+  </table>
+</div>
+
+<script>
+// ===== 설정: repo만 바꾸면 다른 저장소로도 그대로 씁니다 =====
+const BASE_URL = "https://raw.githubusercontent.com/keebh/keebh/main/";
+
+// dh.dat : 8,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3 (16필드, 53자/줄)
+const DH_WIDTHS = [8,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3];
+// pre.dat : 8,3,3,3,4,6,3 (7필드, 30자/줄) - 이번 화면에선 아직 사용 안 함(추후 확장용)
+const PRE_WIDTHS = [8,3,3,3,4,6,3];
+
+const COLUMN_NAMES = ["마번","확률","기록","선행","추입","복병","승률","능력","습보","제외","순위","예상"];
+
+function splitFixedWidth(line, widths) {
+  const out = [];
+  let pos = 0;
+  for (const w of widths) {
+    out.push(line.substring(pos, pos + w).trim());
+    pos += w;
+  }
+  return out;
+}
+
+function toIntOrZero(s) {
+  if (!s || s === "." || s === "-") return 0;
+  const n = parseInt(s, 10);
+  return isNaN(n) ? 0 : n;
+}
+
+// 원본 DIV_INFO 필드 순서 그대로: date,rNo,hNo,PS,NF,NI,NC,NG,ZH,SP,WS,WP,TS,HX,PF,PN
+function parseDh(text) {
+  const lines = text.split(/\r\n|\n/).filter(l => l.trim().length > 0);
+  return lines.map(line => {
+    const f = splitFixedWidth(line, DH_WIDTHS);
+    return {
+      date: f[0], raceNo: toIntOrZero(f[1]), horseNo: toIntOrZero(f[2]),
+      ps: toIntOrZero(f[3]), nf: toIntOrZero(f[4]), ni: toIntOrZero(f[5]),
+      nc: toIntOrZero(f[6]), ng: toIntOrZero(f[7]), zh: toIntOrZero(f[8]),
+      sp: toIntOrZero(f[9]), ws: toIntOrZero(f[10]), wp: toIntOrZero(f[11]),
+      ts: toIntOrZero(f[12]), hx: toIntOrZero(f[13]), pf: toIntOrZero(f[14]),
+      pn: toIntOrZero(f[15])
+    };
+  });
+}
+
+// 경주당 12줄 고정 슬롯. PS(확률)==0 이면 빈 슬롯(실제 출주 안 함)
+function rowsForRace(records, raceNo) {
+  const start = 12 * (raceNo - 1);
+  return records.slice(start, start + 12).filter(r => r.raceNo === raceNo && r.ps !== 0);
+}
+
+function raceNumbers(records) {
+  const set = new Set(records.filter(r => r.ps !== 0).map(r => r.raceNo));
+  return [...set].sort((a,b) => a - b);
+}
+
+function pad(n) { return n < 10 ? "0" + n : "" + n; }
+function toStamp(dateStr) {
+  // yyyy-mm-dd -> yyyymmdd
+  return dateStr.replaceAll("-", "");
+}
+
+async function fetchFirstAvailable(candidates) {
+  for (const name of candidates) {
+    try {
+      const res = await fetch(BASE_URL + name, { cache: "no-store" });
+      if (res.ok) return await res.text();
+    } catch (e) { /* try next */ }
+  }
+  return null;
+}
+
+let currentRecords = [];
+
+async function loadData() {
+  const dateInput = document.getElementById("dateInput");
+  const statusEl = document.getElementById("status");
+  const raceSelect = document.getElementById("raceSelect");
+
+  const dateVal = dateInput.value;
+  if (!dateVal) {
+    statusEl.textContent = "날짜를 선택하세요.";
+    return;
+  }
+  statusEl.style.color = "#666";
+  statusEl.textContent = "불러오는 중...";
+
+  const stamp = toStamp(dateVal);
+  const dhText = await fetchFirstAvailable([`dh${stamp}.dat`, "dh.dat"]);
+
+  if (!dhText) {
+    statusEl.style.color = "#d32f2f";
+    statusEl.textContent = `dh${stamp}.dat / dh.dat 파일을 저장소에서 찾을 수 없습니다.`;
+    document.getElementById("bodyRows").innerHTML = "";
+    return;
+  }
+
+  currentRecords = parseDh(dhText);
+  const races = raceNumbers(currentRecords);
+
+  if (races.length === 0) {
+    statusEl.style.color = "#d32f2f";
+    statusEl.textContent = "선택한 날짜에 경주 데이터가 없습니다.";
+    return;
+  }
+
+  statusEl.textContent = "";
+  raceSelect.innerHTML = races.map(r => `<option value="${r}">${r}경주</option>`).join("");
+  raceSelect.onchange = () => renderTable(parseInt(raceSelect.value, 10));
+  renderTable(races[0]);
+}
+
+function renderTable(raceNo) {
+  const headerRow = document.getElementById("headerRow");
+  const bodyRows = document.getElementById("bodyRows");
+  headerRow.innerHTML = COLUMN_NAMES.map(n => `<th>${n}</th>`).join("");
+
+  const rows = rowsForRace(currentRecords, raceNo);
+  if (rows.length === 0) {
+    bodyRows.innerHTML = `<tr><td colspan="${COLUMN_NAMES.length}">해당 경주 데이터가 없습니다</td></tr>`;
+    return;
+  }
+
+  bodyRows.innerHTML = rows.map(r => {
+    const values = [r.horseNo, r.ps, r.ni, r.nc, r.ng, r.zh, r.ws, r.wp, r.ts, r.hx, r.nf, r.pf];
+    return "<tr>" + values.map((v, i) =>
+      `<td class="${i === values.length - 1 ? 'highlight' : ''}">${v}</td>`
+    ).join("") + "</tr>";
+  }).join("");
+}
+
+document.getElementById("loadBtn").addEventListener("click", loadData);
+document.getElementById("dateInput").valueAsDate = new Date();
+loadData();
+</script>
+</body>
+</html>
