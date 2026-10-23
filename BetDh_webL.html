@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>BetDh Web - 마도리</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, "Malgun Gothic", sans-serif; background:#fafafa; margin:0; padding:0; }
+  header { background:#212121; color:#fff; padding:14px 20px; }
+  header h1 { margin:0; font-size:18px; }
+  header p { margin:4px 0 0; font-size:12px; color:#bbb; font-style: italic; }
+  .controls { display:flex; gap:10px; padding:14px 20px; flex-wrap:wrap; align-items:center; }
+  .controls input, .controls select, .controls button {
+    padding:8px 12px; font-size:14px; border-radius:6px; border:1px solid #ccc;
+  }
+  .controls button { background:#3700B3; color:#fff; border:none; cursor:pointer; }
+  .controls button:hover { background:#2a0087; }
+  .controls label { display:flex; align-items:center; gap:4px; font-size:13px; color:#333; }
+  .controls label input { padding:0; }
+  #status { padding: 0 20px 10px; color:#d32f2f; font-size:13px; min-height: 18px; }
+  #diagBox details { font-size:11px; color:#888; }
+  #diagBox summary { cursor:pointer; }
+  #diagBox pre { white-space:pre-wrap; word-break:break-all; background:#f5f5f5; border:1px solid #eee; border-radius:6px; padding:8px; margin-top:6px; }
+
+  .layout { display:flex; gap:16px; padding: 0 20px 24px; align-items:flex-start; flex-wrap:wrap; }
+  .main-col { flex: 1 1 620px; min-width: 320px; }
+
+  .table-wrap { overflow-x:auto; }
+  table { border-collapse: collapse; width:100%; min-width: 560px; background:#fff; }
+  th, td { border:1px solid #e0e0e0; padding:10px 8px; text-align:center; font-size:13px; white-space:nowrap; }
+  th { background:#212121; color:#fff; }
+  tr:nth-child(even) td { background:#f7f7f7; }
+  td.highlight { color:#d32f2f; font-weight:bold; }
+
+  .fortune-line { padding:10px 14px; background:#fdecd2; border:1px solid #f2d3a0; border-radius:8px;
+    font-size:13px; color:#5d4037; line-height:1.6; }
+  .fortune-line b { color:#e65100; font-size:15px; }
+  .fortune-line .muted { color:#8d6e63; }
+  .fortune-line .empty { color:#999; font-size:12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>BetDh Web - 마도리</h1>
+  <p>Horseracing Betting Strategy</p>
+</header>
+
+<div class="controls">
+  <input type="date" id="dateInput" />
+  <select id="raceSelect"><option>경주 선택</option></select>
+  <button id="loadBtn">불러오기</button>
+  <label><input type="checkbox" id="chkName" /> 마명</label>
+  <label><input type="checkbox" id="chkJockey" /> 기수</label>
+</div>
+<div id="status"></div>
+<div id="diagBox" style="padding:0 20px 10px;"></div>
+<div class="fortune-line" id="fortuneBox" style="margin:0 20px 16px;"><span class="empty">날짜를 선택하세요</span></div>
+
+<div class="layout">
+  <!-- 전면: 경마정보 -->
+  <div class="main-col">
+    <div class="table-wrap">
+      <table id="dataTable">
+        <thead><tr id="headerRow"></tr></thead>
+        <tbody id="bodyRows"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<script>
+// ===== 설정: repo만 바꾸면 다른 저장소로도 그대로 씁니다 =====
+const BASE_URL = "https://raw.githubusercontent.com/keebh/keebh/main/";
+
+// dh.dat 포맷 자동 판별:
+//  - 구 포맷(~2026-04): 8,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3 = 16필드/53자, SP 포함
+//  - 신 포맷(2026-09~ ): 8,3,3,3,3,3,3,3,3,3,3,3,3,3,3   = 15필드/50자, SP 필드 삭제됨
+const DH_WIDTHS_OLD = [8,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3];
+const DH_WIDTHS_NEW = [8,3,3,3,3,3,3,3,3,3,3,3,3,3,3];
+
+const COLUMN_NAMES = ["마번","확률","기록","선행","추입","복병","승률","능력","습보","제외","순위","예상"];
+
+/* =====================================================================
+   1) 행운수 (원본 COhang::CFortune() 로직 - 날짜만으로 결정되는 고정 통계표 조회)
+   ===================================================================== */
+const FORTUNE_MAXV = [23, 12, 21, 24, 23, 15, 21, 23, 9, 20, 22, 12, 19, 9, 19, 15, 12, 19, 15, 12, 11, 18, 10, 8, 14, 13, 12, 13, 12, 7, 12, 10, 11, 12, 13, 7, 12, 10, 17, 9, 24, 17, 17, 10, 20, 11, 15, 15, 11, 15, 22, 19, 22, 26, 12, 31, 17, 17, 10, 19, 33, 21, 12, 15, 15, 23, 22, 30, 25, 20, 14, 19, 9, 10, 19, 13, 13, 12, 14, 10, 10, 16, 19, 15, 24, 19, 15, 19, 16, 18, 19, 14, 15, 20, 14, 15, 19, 13, 20, 11, 12, 13, 11, 11, 18, 18, 19, 13, 25, 18, 15, 11, 19, 12, 28, 25, 20, 24, 30, 20, 11, 18, 14, 13, 10, 12, 13, 15, 7, 7, 8, 13, 22, 16, 13, 17, 23, 18, 19, 13, 10, 22, 21, 16, 21, 12, 8, 21, 17, 12, 23, 20, 13, 9, 15, 7, 18, 21, 13, 13, 10, 16, 12, 21, 16, 18, 19, 17, 12, 10, 15, 10, 16, 9, 19, 22, 12, 20, 7, 7, 25, 10, 30, 18, 24, 19, 18, 25, 21, 20, 25, 16, 12, 6, 18, 10, 15, 20, 18, 11, 12, 7, 11, 13, 9, 16, 23, 14, 21, 17, 18, 26, 25, 25, 19, 10, 9, 12, 18, 11, 11, 14, 11, 14, 19, 21, 19, 11, 25, 9, 11, 8, 17, 13, 10, 9, 14, 5, 14, 8, 14, 20, 11, 21, 20, 22, 15, 24, 14, 11, 19, 16, 18, 11, 14, 13, 13, 16, 16, 13, 12, 19, 22, 16, 18, 18, 14, 16, 32, 17, 16, 12, 21, 19, 11, 9, 10, 10, 16, 25, 22, 18, 21, 17, 16, 14, 20, 14, 20, 14, 17, 10, 13, 12, 9, 8, 12, 11, 15, 10, 12, 17, 13, 13, 12, 12, 7, 13, 10, 15, 6, 13, 4, 8, 7, 18, 10, 9, 11, 13, 11, 14, 15, 14, 18, 16, 9, 16, 11, 11, 12, 12, 28, 11, 12, 13, 10, 24, 9, 15, 12, 11, 9, 16, 19, 33, 10, 12, 15, 10, 24, 13, 23, 16, 23, 17, 16, 41, 11, 17, 27, 19, 19, 26, 16, 18, 28, 22, 20, 23, 24, 20, 27, 13, 8, 10, 10, 13, 11, 10, 8, 15, 11, 10, 22, 10, 11, 12, 9, 16, 14, 15, 17, 10, 12, 15, 11, 17, 10, 18, 11, 15, 11, 15, 15, 16, 7, 22, 11, 21, 15, 15, 20, 20, 9, 13, 13, 18, 15, 19, 29, 24, 20, 14, 12, 11, 21, 21, 16, 9, 26, 27, 12, 10, 11, 15, 12, 10, 11, 22, 18, 17, 17, 18, 30, 18, 22, 22, 33, 22, 22, 24, 18, 32, 28, 25, 27, 20, 10, 17, 15, 19, 17, 19, 26, 23, 24, 12, 17, 6, 10, 15, 16, 17, 18, 11, 13, 9, 11, 18, 25, 15, 12, 6, 18, 16, 28, 16, 8, 14, 8, 16, 15, 23, 13, 16, 27, 14, 19, 19, 12, 25, 11, 15, 26, 23, 21, 22, 20, 13, 10, 20, 16, 16, 19, 20, 14, 28, 13, 11, 11, 12, 9, 11, 11, 18, 10, 15, 13, 14, 12, 25, 12, 19, 13, 16, 24, 13, 16, 8, 21, 20, 17, 16, 13, 23, 20, 17, 18, 14, 13, 14, 12, 10, 10, 9, 12, 11, 10, 11, 12, 6, 8, 7, 19, 20, 22, 15, 21, 18, 14, 16, 23, 14, 17, 16, 20, 13, 9, 16, 13, 9, 15, 14, 15, 10, 6, 7, 20, 12, 8, 13, 6, 10, 16, 14, 8, 14, 9, 9, 19, 16, 11, 12, 21, 25, 21, 18, 26, 14, 20, 18, 24, 9, 17, 18, 18, 21, 17, 16, 17, 22, 20, 22, 15, 16, 28, 17, 18, 14, 16, 19, 13, 15, 11, 15, 14, 14, 27, 18, 21, 12, 21, 14, 8, 20, 15, 8, 11, 17, 25, 14, 23, 18, 16, 15, 13, 17, 19, 14, 18, 17, 14, 20, 22, 14, 20, 26, 12, 22, 14, 11, 11, 12, 17, 10, 16, 12, 13, 5, 11, 20, 16, 19, 13, 7, 11, 13, 11, 7, 12, 18, 12, 7, 11, 7, 18, 10, 22, 15, 16, 15, 21, 8, 23, 20, 15, 15, 39, 10, 18, 21, 13, 14, 11, 21, 13, 11, 15, 9];
+const FORTUNE_MAXNO = [4, 4, 10, 4, 4, 5, 8, 4, 4, 4, 4, 4, 10, 5, 1, 8, 9, 8, 2, 8, 5, 9, 9, 5, 10, 9, 10, 9, 4, 2, 6, 9, 9, 1, 9, 1, 6, 10, 6, 7, 3, 6, 6, 1, 6, 1, 6, 6, 6, 9, 1, 9, 9, 9, 9, 2, 9, 6, 9, 9, 8, 4, 8, 8, 3, 3, 4, 8, 4, 3, 3, 4, 11, 8, 8, 11, 2, 8, 11, 8, 1, 11, 7, 2, 11, 8, 11, 5, 8, 11, 5, 5, 5, 11, 8, 8, 3, 3, 3, 10, 3, 4, 6, 3, 1, 3, 3, 10, 1, 1, 4, 6, 1, 3, 1, 1, 4, 1, 1, 3, 9, 9, 6, 4, 9, 2, 4, 6, 4, 6, 2, 6, 4, 12, 4, 12, 4, 4, 9, 1, 9, 12, 4, 4, 6, 6, 6, 4, 6, 6, 4, 4, 6, 4, 2, 4, 8, 6, 8, 6, 10, 10, 7, 2, 10, 6, 9, 6, 10, 4, 2, 10, 2, 10, 8, 6, 2, 10, 10, 9, 2, 2, 2, 1, 2, 2, 2, 2, 2, 3, 2, 1, 4, 4, 4, 8, 4, 7, 4, 4, 4, 8, 7, 7, 3, 12, 1, 8, 2, 2, 6, 1, 2, 1, 1, 1, 8, 9, 8, 7, 8, 9, 9, 9, 9, 9, 9, 7, 3, 7, 10, 9, 1, 9, 3, 2, 3, 4, 3, 10, 10, 9, 8, 1, 7, 8, 8, 10, 8, 11, 1, 8, 3, 11, 3, 2, 2, 3, 3, 7, 8, 3, 3, 6, 2, 3, 2, 2, 2, 2, 5, 1, 2, 10, 2, 7, 4, 7, 5, 5, 7, 7, 5, 7, 4, 7, 4, 6, 8, 6, 8, 2, 1, 5, 8, 1, 8, 8, 8, 8, 10, 10, 12, 6, 2, 2, 1, 2, 1, 10, 9, 5, 12, 3, 8, 5, 3, 8, 3, 6, 5, 9, 3, 8, 7, 9, 9, 6, 2, 10, 9, 6, 9, 10, 10, 10, 11, 10, 5, 5, 7, 10, 5, 5, 6, 5, 10, 10, 4, 9, 9, 4, 1, 1, 1, 4, 9, 1, 9, 4, 1, 1, 10, 5, 10, 1, 1, 1, 10, 1, 1, 10, 8, 3, 10, 3, 10, 6, 3, 3, 3, 6, 1, 10, 10, 6, 10, 2, 10, 3, 1, 4, 4, 4, 10, 4, 12, 9, 9, 2, 12, 9, 9, 9, 5, 9, 9, 9, 8, 8, 12, 8, 8, 8, 5, 2, 5, 8, 5, 8, 9, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 2, 10, 2, 2, 2, 10, 10, 10, 10, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 8, 2, 2, 7, 8, 2, 7, 2, 2, 8, 8, 7, 10, 8, 10, 1, 8, 1, 2, 8, 8, 7, 8, 1, 1, 1, 3, 1, 1, 1, 1, 1, 4, 1, 3, 1, 10, 10, 8, 4, 2, 2, 7, 2, 2, 4, 2, 4, 1, 1, 8, 8, 8, 7, 8, 1, 1, 7, 7, 8, 9, 9, 9, 9, 1, 1, 9, 7, 9, 9, 7, 1, 3, 2, 4, 3, 5, 2, 5, 3, 4, 3, 3, 2, 4, 4, 4, 4, 4, 4, 4, 10, 4, 4, 9, 9, 6, 11, 11, 11, 4, 11, 10, 1, 11, 11, 4, 5, 9, 9, 9, 10, 10, 9, 2, 9, 2, 2, 2, 9, 11, 7, 6, 6, 2, 10, 7, 6, 7, 11, 7, 6, 1, 3, 12, 2, 8, 7, 8, 12, 3, 2, 10, 2, 3, 3, 6, 3, 3, 3, 3, 3, 3, 2, 3, 10, 6, 5, 6, 6, 6, 6, 6, 4, 5, 4, 4, 5, 10, 7, 5, 10, 10, 10, 7, 5, 5, 4, 10, 10, 10, 5, 11, 4, 10, 4, 4, 10, 10, 4, 5, 10, 2, 3, 3, 9, 8, 4, 1, 3, 4, 2, 8, 3, 6, 8, 8, 8, 8, 8, 9, 8, 8, 8, 8, 3, 8, 1, 1, 8, 3, 2, 2, 1, 1, 2, 8, 8, 5, 1, 4, 9, 1, 5, 7, 1, 3, 7, 1, 6, 5, 9, 9, 9, 8, 9, 3, 9, 9, 9, 3, 9, 6, 7, 6, 6, 9, 6, 9, 6, 6, 6, 6, 8];
+const FORTUNE_MAXPRE = [554, 25, 514, 403, 33, 202, 39, 477, 267, 175, 531, 612, 539, 146, 248, 719, 285, 434, 683, 307, 272, 49, 648, 595, 271, 425, 519, 361, 489, 192, 115, 259, 641, 142, 160, 468, 328, 74, 127, 603, 709, 329, 579, 618, 381, 455, 393, 130, 100, 176, 338, 6, 209, 580, 229, 708, 339, 133, 124, 317, 427, 174, 318, 105, 77, 437, 654, 70, 233, 484, 61, 448, 550, 48, 36, 265, 408, 187, 398, 625, 345, 118, 432, 107, 97, 243, 55, 90, 31, 279, 365, 507, 466, 547, 225, 699, 590, 461, 294, 131, 211, 668, 352, 512, 523, 217, 5, 616, 627, 302, 253, 706, 445, 94, 633, 504, 401, 491, 713, 449, 69, 12, 152, 149, 386, 506, 32, 658, 210, 341, 330, 311, 476, 354, 548, 680, 244, 599, 609, 159, 199, 95, 657, 23, 30, 29, 411, 360, 568, 689, 459, 21, 266, 198, 691, 168, 169, 170, 358, 254, 407, 114, 671, 86, 637, 598, 351, 255, 299, 42, 483, 99, 608, 454, 379, 556, 89, 185, 342, 372, 588, 183, 701, 474, 653, 698, 163, 522, 324, 120, 684, 378, 534, 140, 110, 443, 619, 410, 446, 93, 230, 126, 9, 4, 527, 83, 384, 60, 656, 478, 151, 43, 286, 720, 629, 626, 415, 135, 295, 505, 214, 92, 492, 303, 28, 614, 128, 376, 687, 102, 240, 670, 643, 356, 464, 238, 460, 162, 537, 651, 228, 59, 261, 665, 511, 456, 602, 336, 682, 566, 234, 606, 71, 157, 462, 571, 589, 515, 106, 413, 264, 137, 414, 493, 390, 601, 241, 380, 662, 72, 501, 479, 335, 64, 607, 2, 111, 431, 150, 369, 154, 310, 597, 447, 101, 418, 424, 7, 545, 45, 392, 367, 325, 189, 692, 667, 610, 200, 573, 291, 486, 221, 596, 156, 640, 216, 700, 685, 184, 397, 458, 326, 536, 340, 659, 473, 442, 503, 305, 84, 219, 702, 309, 444, 26, 353, 355, 373, 690, 513, 672, 544, 256, 63, 301, 125, 207, 284, 177, 541, 652, 688, 368, 624, 642, 1, 543, 331, 419, 51, 457, 558, 359, 197, 370, 693, 586, 707, 316, 337, 166, 123, 297, 581, 113, 487, 594, 428, 10, 212, 587, 451, 570, 41, 362, 112, 73, 249, 87, 622, 674, 116, 385, 68, 75, 394, 52, 245, 98, 218, 440, 480, 482, 350, 435, 429, 430, 292, 138, 405, 62, 661, 530, 510, 475, 246, 343, 472, 646, 332, 252, 666, 649, 621, 660, 19, 66, 278, 357, 387, 173, 11, 308, 562, 450, 645, 182, 560, 40, 276, 650, 374, 20, 91, 58, 517, 274, 577, 509, 306, 488, 206, 453, 203, 273, 188, 280, 391, 636, 436, 119, 313, 591, 288, 518, 15, 333, 136, 191, 145, 53, 377, 270, 3, 433, 383, 557, 584, 158, 467, 532, 239, 231, 469, 664, 400, 569, 236, 96, 24, 85, 35, 282, 546, 180, 631, 620, 490, 76, 716, 639, 409, 615, 481, 103, 293, 371, 575, 500, 533, 497, 635, 694, 366, 561, 495, 521, 710, 647, 67, 314, 204, 416, 634, 421, 565, 452, 178, 348, 37, 237, 181, 300, 681, 395, 549, 44, 129, 327, 172, 208, 678, 320, 171, 13, 695, 153, 567, 516, 227, 439, 404, 16, 251, 551, 117, 605, 535, 139, 499, 82, 277, 8, 80, 417, 611, 396, 576, 679, 349, 600, 164, 195, 375, 38, 193, 17, 463, 420, 485, 717, 65, 132, 697, 263, 540, 223, 186, 438, 18, 583, 686, 555, 582, 104, 260, 572, 528, 296, 502, 14, 669, 247, 673, 676, 632, 323, 655, 559, 78, 412, 290, 56, 147, 712, 508, 334, 262, 315, 275, 364, 346, 628, 79, 194, 196, 406, 675, 705, 623, 663, 564, 630, 578, 269, 426, 711, 205, 525, 155, 441, 677, 714, 704, 470, 57, 54, 604, 283, 321, 389, 268, 465, 423, 257, 144, 494, 496, 34, 258, 250, 552, 222, 165, 81, 22, 226, 242, 613, 593, 141, 134, 347, 322, 298, 122, 703, 585, 402, 220, 235, 161, 538, 27, 388, 47, 526, 520, 319, 542, 638, 232, 143, 422, 190, 148, 524, 304, 281, 617, 696, 471, 179, 121, 553, 644, 382, 50, 224, 109, 399, 287, 715, 344, 498, 574, 363, 46, 215, 563, 592, 108, 718, 167, 312, 289, 201, 529, 88, 213];
+
+function computeFortune(dateStr) {
+  const [y, m, d] = dateStr.split("-").map(Number);
+  const raw = Date.UTC(1993, 5, 12);
+  const target = Date.UTC(y, m - 1, d);
+  const ndiff = Math.round((target - raw) / 86400000) + 1;
+  let nKjId = ndiff % 60;
+  if (nKjId <= 0) nKjId += 60;
+
+  let nKjMu = 0;
+  const under = { 1:5, 2:4, 3:5, 4:5, 5:5, 6:6, 7:7, 8:7, 9:7, 10:8, 11:7, 12:7 };
+  if (d < under[m]) nKjMu = m;
+  const overMap = { 1:2, 2:3, 3:4, 4:5, 5:6, 6:7, 7:8, 8:9, 9:10, 10:11, 11:12, 12:1 };
+  if (d >= under[m]) nKjMu = overMap[m];
+
+  const nidle = 12 * (nKjId - 1) + (nKjMu - 1);
+  return {
+    kjId: nKjId, kjMu: nKjMu,
+    maxV: FORTUNE_MAXV[nidle], maxNo: FORTUNE_MAXNO[nidle], maxPre: FORTUNE_MAXPRE[nidle]
+  };
+}
+
+// 원본 kjn.dat (60갑자 기준 고정표) 중 삼쌍승식(Trifecta) 행운마번 5개 - COhang의 sKJ_Trifecta
+// kjn.dat 컬럼: KJ60 KJfn KJwf1 KJwf2 KJqf1 KJqf2 KJqf3 KJqf4 KJty1 KJty2 KJty3 KJty4 KJty5
+const KJTY1 = [3,9,7,4,11,6,1,8,7,5,7,10,11,6,8,10,8,1,7,4,11,8,9,2,9,4,6,6,7,3,11,4,1,9,2,1,9,3,2,5,8,4,1,6,3,7,11,4,3,3,5,6,8,6,3,8,1,4,9,10];
+const KJTY2 = [1,2,9,3,10,10,5,1,1,6,11,9,9,10,2,2,4,9,10,1,9,4,3,7,6,7,9,1,8,1,7,11,5,3,10,10,4,1,11,9,6,5,5,5,2,1,7,10,11,1,3,10,9,7,10,7,5,1,11,6];
+const KJTY3 = [10,8,6,2,9,5,2,11,6,3,6,2,3,2,4,8,11,5,1,10,10,6,7,11,7,2,5,2,1,11,2,8,10,6,8,8,5,8,8,7,4,8,7,2,7,4,8,6,6,9,6,4,6,9,8,3,4,7,6,2];
+const KJTY4 = [7,10,3,1,2,4,4,4,3,7,1,11,7,5,6,1,6,10,8,7,1,3,10,3,2,5,8,10,11,8,1,1,8,5,6,9,2,11,3,4,11,2,3,10,5,2,9,5,5,4,10,11,3,10,7,9,7,2,3,9];
+const KJTY5 = [5,5,10,8,1,2,3,10,8,10,3,6,6,9,11,4,1,11,3,2,6,2,8,10,1,6,7,5,9,4,5,3,2,8,3,2,1,4,4,8,5,11,4,9,10,5,1,2,8,5,4,1,7,5,4,4,8,9,7,5];
+
+function computeTrifecta(nKjId) {
+  const i = nKjId - 1;
+  return [KJTY1[i], KJTY2[i], KJTY3[i], KJTY4[i], KJTY5[i]];
+}
+
+function renderFortune(dateStr) {
+  const el = document.getElementById("fortuneBox");
+  if (!dateStr) { el.innerHTML = `<span class="empty">날짜를 선택하세요</span>`; return; }
+  const f = computeFortune(dateStr);
+  const tri = computeTrifecta(f.kjId);
+  el.innerHTML = `🍀 오늘의 행운수(마번): <b>${f.maxNo}</b>` +
+    ` · 삼쌍5두: <b>${tri.join("-")}</b>` +
+    ` · 편성: <b id="pnInline">-</b>` +
+    ` <span class="muted">(확률차이값 ${f.maxV} · 배당서열 ${f.maxPre}위 · 갑자 ${f.kjId}/60 · 절기월지 ${f.kjMu})</span>`;
+}
+
+// 원본 PN 필드(1~4) -> 편성 라벨. 경주별로 dh.dat 마지막 컬럼에 고정 저장되어 있음(모든 마번 동일값)
+const PN_LABELS = { 1: "1강", 2: "2강", 3: "3강", 4: "혼전" };
+function renderPn(raceNo) {
+  const el = document.getElementById("pnInline");
+  if (!el) return;
+  const rows = rowsForRace(currentRecords, raceNo);
+  const pn = rows.length ? rows[0].pn : 0;
+  el.textContent = PN_LABELS[pn] || "-";
+}
+
+/* =====================================================================
+   2) dh.dat 파싱 (경마정보 - 전면 테이블)
+   ===================================================================== */
+function splitFixedWidth(line, widths) {
+  const out = [];
+  let pos = 0;
+  for (const w of widths) {
+    out.push(line.substring(pos, pos + w).trim());
+    pos += w;
+  }
+  return out;
+}
+
+function toIntOrZero(s) {
+  if (!s || s === "." || s === "-") return 0;
+  const n = parseInt(s, 10);
+  return isNaN(n) ? 0 : n;
+}
+
+function parseDh(text) {
+  const lines = text.split(/\r\n|\n/).filter(l => l.trim().length > 0);
+  return lines.map(line => {
+    const hasSp = line.length >= 53;
+    const widths = hasSp ? DH_WIDTHS_OLD : DH_WIDTHS_NEW;
+    const f = splitFixedWidth(line, widths);
+    if (hasSp) {
+      return {
+        date: f[0], raceNo: toIntOrZero(f[1]), horseNo: toIntOrZero(f[2]),
+        ps: toIntOrZero(f[3]), nf: toIntOrZero(f[4]), ni: toIntOrZero(f[5]),
+        nc: toIntOrZero(f[6]), ng: toIntOrZero(f[7]), zh: toIntOrZero(f[8]),
+        sp: toIntOrZero(f[9]), ws: toIntOrZero(f[10]), wp: toIntOrZero(f[11]),
+        ts: toIntOrZero(f[12]), hx: toIntOrZero(f[13]), pf: toIntOrZero(f[14]),
+        pn: toIntOrZero(f[15])
+      };
+    }
+    return {
+      date: f[0], raceNo: toIntOrZero(f[1]), horseNo: toIntOrZero(f[2]),
+      ps: toIntOrZero(f[3]), nf: toIntOrZero(f[4]), ni: toIntOrZero(f[5]),
+      nc: toIntOrZero(f[6]), ng: toIntOrZero(f[7]), zh: toIntOrZero(f[8]),
+      sp: 0, ws: toIntOrZero(f[9]), wp: toIntOrZero(f[10]),
+      ts: toIntOrZero(f[11]), hx: toIntOrZero(f[12]), pf: toIntOrZero(f[13]),
+      pn: toIntOrZero(f[14])
+    };
+  });
+}
+
+function rowsForRace(records, raceNo) {
+  const start = 12 * (raceNo - 1);
+  return records.slice(start, start + 12).filter(r => r.raceNo === raceNo && r.ps !== 0);
+}
+
+function raceNumbers(records) {
+  const set = new Set(records.filter(r => r.ps !== 0).map(r => r.raceNo));
+  return [...set].sort((a,b) => a - b);
+}
+
+// 출주표(chulma) 파싱 - race.kra.co.kr 텍스트자료실의 dacom01.rpt 형식
+// (전면 첫 표: 마번 마명 산지 성별 연령 중량 기수 조교사 마주 레이팅)
+// 산지/성별이 붙어 나오거나("한(포)암") 기수 앞에 감량표시("(-4)")가 붙는 경우가 있어
+// 앞쪽 토큰 수로 위치를 고정하지 않고, 뒤에서부터 세어 마명/기수를 뽑아낸다.
+function parseChulma(text) {
+  const result = {};
+  const blocks = text.split(/제목\s*:/).slice(1);
+  for (const block of blocks) {
+    const raceMatch = block.match(/(\d+)\s*경주\s*;/);
+    if (!raceMatch) continue;
+    const raceNo = parseInt(raceMatch[1], 10);
+
+    const parts = block.split(/^-{5,}\r?$/m);
+    if (parts.length < 3) continue;
+    const dataBlock = parts[2];
+
+    const horses = {};
+    for (const line of dataBlock.split(/\r?\n/)) {
+      const tokens = line.trim().split(/\s+/).filter(Boolean);
+      if (tokens.length < 6) continue;
+      const horseNo = parseInt(tokens[0], 10);
+      if (!horseNo || isNaN(horseNo)) continue;
+
+      const name = tokens[1];
+      const last = tokens[tokens.length - 1];
+      const jockeyIdx = /^\d+$/.test(last) ? tokens.length - 4 : tokens.length - 3;
+      if (jockeyIdx < 2) continue;
+      const jockey = (tokens[jockeyIdx] || "").replace(/^\(-?\d+\)/, "");
+
+      horses[horseNo] = { name, jockey };
+    }
+    if (Object.keys(horses).length) result[raceNo] = horses;
+  }
+  return result;
+}
+
+function renderTable(raceNo) {
+  const headerRow = document.getElementById("headerRow");
+  const bodyRows = document.getElementById("bodyRows");
+
+  const showName = document.getElementById("chkName").checked;
+  const showJockey = document.getElementById("chkJockey").checked;
+
+  const names = ["마번"];
+  if (showName) names.push("마명");
+  if (showJockey) names.push("기수");
+  names.push(...COLUMN_NAMES.slice(1));
+
+  headerRow.innerHTML = names.map(n => `<th>${n}</th>`).join("");
+
+  const rows = rowsForRace(currentRecords, raceNo);
+  if (rows.length === 0) {
+    bodyRows.innerHTML = `<tr><td colspan="${names.length}">해당 경주 데이터가 없습니다</td></tr>`;
+    return;
+  }
+
+  const chulmaRace = currentChulma ? currentChulma[raceNo] : null;
+
+  bodyRows.innerHTML = rows.map(r => {
+    const info = chulmaRace && chulmaRace[r.horseNo];
+    const extra = [];
+    if (showName) extra.push(info ? info.name : "-");
+    if (showJockey) extra.push(info ? info.jockey : "-");
+    const values = [r.horseNo, ...extra, r.ps, r.ni, r.nc, r.ng, r.zh, r.ws, r.wp, r.ts, r.hx, r.nf, r.pf];
+    return "<tr>" + values.map((v, i) =>
+      `<td class="${i === values.length - 1 ? 'highlight' : ''}">${v}</td>`
+    ).join("") + "</tr>";
+  }).join("");
+}
+
+/* =====================================================================
+   4) 데이터 로딩 & 화면 제어
+   ===================================================================== */
+function pad(n) { return n < 10 ? "0" + n : "" + n; }
+function toStamp(dateStr) { return dateStr.replaceAll("-", ""); }
+
+let diagLog = [];
+function diag(msg) { diagLog.push(msg); }
+
+async function fetchFirstAvailable(candidates) {
+  for (const name of candidates) {
+    const url = BASE_URL + name;
+    try {
+      const res = await fetch(url, { cache: "no-store" });
+      if (res.ok) {
+        // dh/chulma 등 원본 .dat/.rpt 파일은 EUC-KR(CP949)로 저장돼 있어서, 기본 UTF-8
+        // 디코딩(res.text())을 쓰면 한글이 깨진다. 파싱에 한글 마커("경주" 등)가 쓰이는
+        // chulma 파일을 위해 항상 EUC-KR로 명시 디코딩한다(숫자만 쓰는 dh.dat엔 영향 없음).
+        const buf = await res.arrayBuffer();
+        const text = new TextDecoder("euc-kr").decode(buf);
+        diag(`✅ ${url} → 성공`);
+        return text;
+      }
+      diag(`⚠️ ${url} → HTTP ${res.status}`);
+    } catch (e) { diag(`❌ ${url} → ${e.message || e}`); }
+  }
+  return null;
+}
+
+let currentRecords = [];
+let currentChulma = null; // { raceNo: { horseNo: {name, jockey} } } - null이면 출주표 데이터 없음
+
+async function loadData() {
+  const dateInput = document.getElementById("dateInput");
+  const statusEl = document.getElementById("status");
+  const raceSelect = document.getElementById("raceSelect");
+
+  const dateVal = dateInput.value;
+  if (!dateVal) {
+    statusEl.textContent = "날짜를 선택하세요.";
+    return;
+  }
+  renderFortune(dateVal);
+  statusEl.style.color = "#666";
+  statusEl.textContent = "불러오는 중...";
+  diagLog = [];
+
+  const stamp = toStamp(dateVal);
+  const [dhText, chulmaText] = await Promise.all([
+    fetchFirstAvailable([`dh${stamp}.dat`, "dh.dat"]),
+    fetchFirstAvailable([`chulma${stamp}.dat`, "chulma.dat"])
+  ]);
+
+  currentChulma = chulmaText ? parseChulma(chulmaText) : null;
+
+  if (!dhText) {
+    statusEl.style.color = "#d32f2f";
+    statusEl.textContent = `dh${stamp}.dat / dh.dat 파일을 저장소에서 찾을 수 없습니다.`;
+    document.getElementById("bodyRows").innerHTML = "";
+    renderDiag();
+    return;
+  }
+
+  currentRecords = parseDh(dhText);
+  const races = raceNumbers(currentRecords);
+
+  if (races.length === 0) {
+    statusEl.style.color = "#d32f2f";
+    statusEl.textContent = "선택한 날짜에 경주 데이터가 없습니다.";
+    return;
+  }
+  statusEl.textContent = currentChulma ? "" : "※ 출주표(chulma) 파일이 없어 마명/기수는 표시되지 않습니다.";
+  statusEl.style.color = "#e65100";
+
+  raceSelect.innerHTML = races.map(r => `<option value="${r}">${r}경주</option>`).join("");
+  raceSelect.onchange = () => {
+    const raceNo = parseInt(raceSelect.value, 10);
+    renderTable(raceNo);
+    renderPn(raceNo);
+  };
+  renderTable(races[0]);
+  renderPn(races[0]);
+  renderDiag();
+}
+
+function renderDiag() {
+  const box = document.getElementById("diagBox");
+  if (!box) return;
+  if (diagLog.length === 0) { box.innerHTML = ""; return; }
+  box.innerHTML = `<details><summary>진단 로그 (결과 데이터 요청 상세)</summary><pre>${diagLog.join("\n").replace(/</g,"&lt;")}</pre></details>`;
+}
+
+document.getElementById("loadBtn").addEventListener("click", loadData);
+document.getElementById("chkName").addEventListener("change", () => {
+  const raceNo = parseInt(document.getElementById("raceSelect").value, 10);
+  if (!isNaN(raceNo)) renderTable(raceNo);
+});
+document.getElementById("chkJockey").addEventListener("change", () => {
+  const raceNo = parseInt(document.getElementById("raceSelect").value, 10);
+  if (!isNaN(raceNo)) renderTable(raceNo);
+});
+document.getElementById("dateInput").addEventListener("change", (e) => renderFortune(e.target.value));
+document.getElementById("dateInput").valueAsDate = new Date();
+renderFortune(document.getElementById("dateInput").value);
+loadData();
+</script>
+</body>
+</html>
